@@ -24,6 +24,7 @@ class CapsGNN(torch.nn.Module):
         self.args = args
         self.number_of_features = number_of_features
         self.number_of_targets = number_of_targets
+        self.number_of_tasks = 4
         self._setup_layers()
 
     def _setup_base_layers(self):
@@ -57,24 +58,26 @@ class CapsGNN(torch.nn.Module):
         """
         Creating class capsules.
         """
-        self.class_capsule_0 =  SecondaryCapsuleLayer(self.args.capsule_dimensions,self.args.number_of_capsules, self.number_of_targets, self.args.capsule_dimensions)
-        
-        self.class_capsule_1 =  SecondaryCapsuleLayer(self.args.capsule_dimensions,self.args.number_of_capsules, self.number_of_targets, self.args.capsule_dimensions)
+        for i in range(self.number_of_tasks):
+            vars(self)["class_capsule_%s"%i] = SecondaryCapsuleLayer(self.args.capsule_dimensions,
+                                                                     self.args.number_of_capsules, 
+                                                                     self.number_of_targets,
+                                                                     self.args.capsule_dimensions)
+            
 
     def _setup_reconstruction_layers(self):
         """
         Creating histogram reconstruction layers.
         """
-        self.reconstruction_layer_1_0 = torch.nn.Linear(self.number_of_targets*self.args.capsule_dimensions, int((self.number_of_features * 2) / 3))
-        self.reconstruction_layer_2_0 = torch.nn.Linear(int((self.number_of_features * 2) / 3), int((self.number_of_features * 3) / 2))
-        self.reconstruction_layer_3_0 = torch.nn.Linear(int((self.number_of_features * 3) / 2), self.number_of_features)
+        for i in range(self.number_of_tasks):
+            
+            vars(self)["reconstruction_layer_1_%s"%i] = torch.nn.Linear(self.number_of_targets*self.args.capsule_dimensions, int((self.number_of_features * 2) / 3))
+            
+            vars(self)["reconstruction_layer_2_%s"%i] = torch.nn.Linear(int((self.number_of_features * 2) / 3), int((self.number_of_features * 3) / 2))
+            
+            vars(self)["reconstruction_layer_3_%s"%i] = torch.nn.Linear(int((self.number_of_features * 3) / 2), self.number_of_features)
         
-        
-        ######
-        self.reconstruction_layer_1_1 = torch.nn.Linear(self.number_of_targets*self.args.capsule_dimensions, int((self.number_of_features * 2) / 3))
-        self.reconstruction_layer_2_1 = torch.nn.Linear(int((self.number_of_features * 2) / 3), int((self.number_of_features * 3) / 2))
-        self.reconstruction_layer_3_1 = torch.nn.Linear(int((self.number_of_features * 3) / 2), self.number_of_features)
-
+ 
     def _setup_layers(self):
         """
         Creating layers of model.
@@ -111,22 +114,15 @@ class CapsGNN(torch.nn.Module):
         feature_counts = features.sum(dim=0)
         feature_counts = feature_counts/feature_counts.sum()
 
-        if task == 0 :
-            reconstruction_output = torch.nn.functional.relu(self.reconstruction_layer_1_0(capsule_masked))
-            reconstruction_output = torch.nn.functional.relu(self.reconstruction_layer_2_0(reconstruction_output))
-            reconstruction_output = torch.softmax(self.reconstruction_layer_3_0(reconstruction_output),dim=1)
-            reconstruction_output = reconstruction_output.view(1, self.number_of_features)
-
-            reconstruction_loss = torch.sum((features-reconstruction_output)**2)
         
-        else:
-            reconstruction_output = torch.nn.functional.relu(self.reconstruction_layer_1_1(capsule_masked))
-            reconstruction_output = torch.nn.functional.relu(self.reconstruction_layer_2_1(reconstruction_output))
-            reconstruction_output = torch.softmax(self.reconstruction_layer_3_1(reconstruction_output),dim=1)
-            reconstruction_output = reconstruction_output.view(1, self.number_of_features)
+        reconstruction_output = torch.nn.functional.relu(vars(self)["reconstruction_layer_1_%s"%task](capsule_masked))
+        reconstruction_output = torch.nn.functional.relu(vars(self)["reconstruction_layer_2_%s"%task](reconstruction_output))
+        reconstruction_output = torch.softmax(vars(self)["reconstruction_layer_3_%s"%task](reconstruction_output),dim=1)
+        reconstruction_output = reconstruction_output.view(1, self.number_of_features)
 
-            reconstruction_loss = torch.sum((features-reconstruction_output)**2)
+        reconstruction_loss = torch.sum((features-reconstruction_output)**2)
         
+
         return reconstruction_loss
         
     def forward(self, data):
@@ -154,23 +150,34 @@ class CapsGNN(torch.nn.Module):
         reshaped_graph_capsule_output = graph_capsule_output.view(-1, self.args.capsule_dimensions, self.args.number_of_capsules ) 
         
         ######
+        output = tuple()
+        for i in range(self.number_of_tasks):
+            vars()["class_capsule_output_%s"%i] = vars(self)["class_capsule_%s"%i](reshaped_graph_capsule_output)
+            
+            vars()["class_capsule_output_%s"%i] = vars()["class_capsule_output_%s"%i].view(-1,
+                                                                self.number_of_targets*self.args.capsule_dimensions )
+            
+            vars()["class_capsule_output_%s"%i] = torch.mean(vars()["class_capsule_output_%s"%i],dim=0).view(1,
+                                                                self.number_of_targets,self.args.capsule_dimensions)
+            
+            output = output + (vars()["class_capsule_output_%s"%i],)
         
-        class_capsule_output_0 = self.class_capsule_0(reshaped_graph_capsule_output)
-        class_capsule_output_0 =  class_capsule_output_0.view(-1, self.number_of_targets*self.args.capsule_dimensions )
-        class_capsule_output_0 = torch.mean(class_capsule_output_0,dim=0).view(1,self.number_of_targets,self.args.capsule_dimensions)
         
-        reconstruction_loss_0 = self.calculate_reconstruction_loss(class_capsule_output_0.view(self.number_of_targets,self.args.capsule_dimensions), data["features"],0)
+        #######
+        reconstruction_loss = 0
+        for i in range(self.number_of_tasks):
+            vars()["reconstruction_loss_%s"%i] = self.calculate_reconstruction_loss(
+                vars()["class_capsule_output_%s"%i].view(self.number_of_targets,self.args.capsule_dimensions), 
+                                                                                            data["features"],i)
+            reconstruction_loss+= vars()["reconstruction_loss_%s"%i]
+
+        reconstruction_loss = reconstruction_loss / self.number_of_tasks
         
-        ######
-        class_capsule_output_1 = self.class_capsule_1(reshaped_graph_capsule_output)
-        class_capsule_output_1 =  class_capsule_output_1.view(-1, self.number_of_targets*self.args.capsule_dimensions )
-        class_capsule_output_1 = torch.mean(class_capsule_output_1,dim=0).view(1,self.number_of_targets,self.args.capsule_dimensions)
+        ########
+        output = output + (reconstruction_loss,)
         
-        reconstruction_loss_1 = self.calculate_reconstruction_loss(class_capsule_output_1.view(self.number_of_targets,self.args.capsule_dimensions), data["features"],1)
         
-        reconstruction_loss = (reconstruction_loss_0 + reconstruction_loss_1) / 2
-        
-        return class_capsule_output_0, class_capsule_output_1, reconstruction_loss
+        return output
         
 
 class CapsGNNTrainer(object):
@@ -304,15 +311,17 @@ class CapsGNNTrainer(object):
                 optimizer.zero_grad()
                 batch = self.batches[step]
                 for path in batch:
-                    task = 2
-                    loss_multi = 0
+                    task = 4
+
                     data = self.create_input_data(path,task)
-                    prediction_0, prediction_1, reconstruction_loss = self.model(data)
+                    prediction_0, prediction_1, prediction_2, prediction_3, reconstruction_loss = self.model(data)
                     
                     loss = margin_loss(prediction_0, data["target0"], self.args.lambd)+self.args.theta*reconstruction_loss
                     loss+= margin_loss(prediction_1, data["target1"], self.args.lambd)+self.args.theta*reconstruction_loss
+                    loss+= margin_loss(prediction_2, data["target2"], self.args.lambd)+self.args.theta*reconstruction_loss
+                    loss+= margin_loss(prediction_3, data["target3"], self.args.lambd)+self.args.theta*reconstruction_loss
                     
-                    accumulated_losses = accumulated_losses + (loss/2)
+                    accumulated_losses = accumulated_losses + (loss/4)
                 
                 accumulated_losses = accumulated_losses/len(batch)
                 accumulated_losses.backward()
@@ -331,16 +340,16 @@ class CapsGNNTrainer(object):
         self.hits = []
         
         for path in tqdm(self.test_graph_paths):
-            task = 2
+            task = 4
             data = self.create_input_data(path,task)
             
-            prediction_0, prediction_1, reconstruction_loss = self.model(data)
-            prediction_mag = torch.sqrt((prediction_0**2).sum(dim=2))
+            prediction_0, prediction_1, prediction_2, prediction_3, reconstruction_loss = self.model(data)
+            prediction_mag = torch.sqrt((prediction_1**2).sum(dim=2))
             _, prediction_max_index = prediction_mag.max(dim=1)
             prediction = prediction_max_index.data.view(-1).item()
             self.predictions.append(prediction)
   
-            self.hits.append(data["target0"][prediction]==1.0)
+            self.hits.append(data["target1"][prediction]==1.0)
 
         print("\nAccuracy: " + str(round(np.mean(self.hits),4)))
 
