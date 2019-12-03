@@ -3,6 +3,7 @@
 Run defaut training
 
 cd data
+
 python ./src/main.py
 
 
