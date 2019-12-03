@@ -2,6 +2,8 @@ venv/
 .idea/
 .ipynb_checkpoints/
 .vs/
+GraphData_raw/
+transformed_sample/
 NCI_sdf/
 NCI_txt/
 *.sdf
