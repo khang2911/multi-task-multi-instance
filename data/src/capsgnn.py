@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm, trange
 from torch_geometric.nn import GCNConv
 from utils import create_numeric_mapping
-from layers import ListModule, PrimaryCapsuleLayer, Attention, SecondaryCapsuleLayer, margin_loss
+from layers import ListModule, PrimaryCapsuleLayer, Attention, SecondaryCapsuleLayer, margin_loss, TaskRouter
 
 class CapsGNN(torch.nn.Module):
     """
@@ -24,7 +24,7 @@ class CapsGNN(torch.nn.Module):
         self.args = args
         self.number_of_features = number_of_features
         self.number_of_targets = number_of_targets
-        self.number_of_tasks = 4
+        self.number_of_tasks = 8
         self._setup_layers()
 
     def _setup_base_layers(self):
@@ -58,17 +58,23 @@ class CapsGNN(torch.nn.Module):
         """
         Creating class capsules.
         """
+
+        
         for i in range(self.number_of_tasks):
             vars(self)["class_capsule_%s"%i] = SecondaryCapsuleLayer(self.args.capsule_dimensions,
                                                                      self.args.number_of_capsules, 
                                                                      self.number_of_targets,
                                                                      self.args.capsule_dimensions)
             
+        
+        
+        
 
     def _setup_reconstruction_layers(self):
         """
         Creating histogram reconstruction layers.
         """
+        
         for i in range(self.number_of_tasks):
             
             vars(self)["reconstruction_layer_1_%s"%i] = torch.nn.Linear(self.number_of_targets*self.args.capsule_dimensions, int((self.number_of_features * 2) / 3))
@@ -76,8 +82,10 @@ class CapsGNN(torch.nn.Module):
             vars(self)["reconstruction_layer_2_%s"%i] = torch.nn.Linear(int((self.number_of_features * 2) / 3), int((self.number_of_features * 3) / 2))
             
             vars(self)["reconstruction_layer_3_%s"%i] = torch.nn.Linear(int((self.number_of_features * 3) / 2), self.number_of_features)
+            
+
+
         
- 
     def _setup_layers(self):
         """
         Creating layers of model.
@@ -121,8 +129,8 @@ class CapsGNN(torch.nn.Module):
         reconstruction_output = reconstruction_output.view(1, self.number_of_features)
 
         reconstruction_loss = torch.sum((features-reconstruction_output)**2)
-        
 
+        
         return reconstruction_loss
         
     def forward(self, data):
@@ -147,7 +155,8 @@ class CapsGNN(torch.nn.Module):
         rescaled_capsule_output = self.attention(first_capsule_output)
         rescaled_first_capsule_output = rescaled_capsule_output.view(-1, self.args.gcn_layers, self.args.capsule_dimensions)
         graph_capsule_output = self.graph_capsule(rescaled_first_capsule_output)
-        reshaped_graph_capsule_output = graph_capsule_output.view(-1, self.args.capsule_dimensions, self.args.number_of_capsules ) 
+        reshaped_graph_capsule_output = graph_capsule_output.view(-1, self.args.capsule_dimensions, self.args.number_of_capsules) 
+        
         
         ######
         output = tuple()
@@ -166,20 +175,25 @@ class CapsGNN(torch.nn.Module):
         #######
         reconstruction_loss = 0
         for i in range(self.number_of_tasks):
+            vars()['recon_%s'%i] = vars()["class_capsule_output_%s"%i].view(
+                                            self.number_of_targets,self.args.capsule_dimensions)
+            
             vars()["reconstruction_loss_%s"%i] = self.calculate_reconstruction_loss(
-                vars()["class_capsule_output_%s"%i].view(self.number_of_targets,self.args.capsule_dimensions), 
-                                                                                            data["features"],i)
+                                                vars()['recon_%s'%i],data["features"],i)
+            
             reconstruction_loss+= vars()["reconstruction_loss_%s"%i]
+            
+            output = output + (vars()["reconstruction_loss_%s"%i],)
 
-        reconstruction_loss = reconstruction_loss / self.number_of_tasks
+        #reconstruction_loss = reconstruction_loss / self.number_of_tasks
         
         ########
-        output = output + (reconstruction_loss,)
+        #output = output + (reconstruction_loss,)
         
         
         return output
-        
 
+                                        
 class CapsGNNTrainer(object):
     """
     CapsGNN training and scoring.
@@ -293,6 +307,8 @@ class CapsGNNTrainer(object):
         to_pass_forward = self.create_data_dictionary(target, edges, features)
         return to_pass_forward
 
+        
+        
     def fit(self):
         """
         Training a model on the training set.
@@ -311,17 +327,23 @@ class CapsGNNTrainer(object):
                 optimizer.zero_grad()
                 batch = self.batches[step]
                 for path in batch:
-                    task = 4
-
+                    task = 8
+                    loss = 0
                     data = self.create_input_data(path,task)
-                    prediction_0, prediction_1, prediction_2, prediction_3, reconstruction_loss = self.model(data)
+                    batch_output = self.model(data)
                     
-                    loss = margin_loss(prediction_0, data["target0"], self.args.lambd)+self.args.theta*reconstruction_loss
-                    loss+= margin_loss(prediction_1, data["target1"], self.args.lambd)+self.args.theta*reconstruction_loss
-                    loss+= margin_loss(prediction_2, data["target2"], self.args.lambd)+self.args.theta*reconstruction_loss
-                    loss+= margin_loss(prediction_3, data["target3"], self.args.lambd)+self.args.theta*reconstruction_loss
+                    #prediction_0, prediction_1, reconstruction_loss_0, reconstruction_loss_1 = self.model(data)
                     
-                    accumulated_losses = accumulated_losses + (loss/4)
+                    for i in range(task):
+                        loss+=margin_loss(batch_output[i],data["target%s"%i],self.args.lambd)
+                        loss+=self.args.theta*batch_output[i+task]
+                    
+                    '''
+                    loss+= margin_loss(prediction_2,data["target2"],self.args.lambd)+self.args.theta*reconstruction_loss_2
+                    loss+= margin_loss(prediction_3, data["target3"],self.args.lambd)+self.args.theta*reconstruction_loss_3
+                    '''
+                    
+                    accumulated_losses = accumulated_losses + (loss/task)
                 
                 accumulated_losses = accumulated_losses/len(batch)
                 accumulated_losses.backward()
@@ -336,29 +358,50 @@ class CapsGNNTrainer(object):
         """
         print("\n\nScoring.\n")
         self.model.eval()
-        self.predictions = []
-        self.hits = []
-        
-        for path in tqdm(self.test_graph_paths):
-            task = 4
-            data = self.create_input_data(path,task)
+        #self.predictions = []
+        #self.hits = []
+        task = 8
+        for i in range(task):
+            vars(self)["predictions_%s"%i] = []
+            vars(self)["hits_%s"%i] = []
             
-            prediction_0, prediction_1, prediction_2, prediction_3, reconstruction_loss = self.model(data)
-            prediction_mag = torch.sqrt((prediction_1**2).sum(dim=2))
-            _, prediction_max_index = prediction_mag.max(dim=1)
-            prediction = prediction_max_index.data.view(-1).item()
-            self.predictions.append(prediction)
-  
-            self.hits.append(data["target1"][prediction]==1.0)
-
-        print("\nAccuracy: " + str(round(np.mean(self.hits),4)))
-
+        for path in tqdm(self.test_graph_paths):
+            #####
+            data = self.create_input_data(path,task)
+            results = self.model(data)
+            #####
+            for i in range(task):
+            
+                prediction_mag = torch.sqrt((results[i]**2).sum(dim=2))
+                _, prediction_max_index = prediction_mag.max(dim=1)
+                prediction = prediction_max_index.data.view(-1).item()
+                
+                vars(self)["predictions_%s"%i].append(prediction)
+                vars(self)["hits_%s"%i].append(data["target%s"%i][prediction]==1.0)
+                
+                #self.predictions.append(prediction)
+                #self.hits.append(data["target1"][prediction]==1.0)
+        
+        acc_outfile = open('./output/accuracy.txt','w')
+        for i in range(task):
+            acc_outfile.write("Accuracy%s: "%i + str(round(np.mean(vars(self)["hits_%s"%i]),4)) + '\n') 
+            print("\nAccuracy%s: "%i + str(round(np.mean(vars(self)["hits_%s"%i]),4)))
+            #print("\nAccuracy: " + str(round(np.mean(self.hits),4)))
+        
+        acc_outfile.close()
+    
     def save_predictions(self):
         """
         Saving the test set predictions.
         """
+        task = 8
         identifiers = [path.split("/")[-1].strip(".json") for path in self.test_graph_paths]
-        out = pd.DataFrame()
-        out["id"] = identifiers
-        out["predictions"] = self.predictions
-        out.to_csv(self.args.prediction_path, index = None)
+        torch.save(self.model,'./output/model.pt')
+        for i in range(task):
+            out = pd.DataFrame()
+            out["id"] = identifiers
+            out["predictions"] = vars(self)["predictions_%s"%i]
+            out["hits"] = vars(self)["hits_%s"%i]
+            #out["predictions"] = self.predictions_0
+            #out.to_csv(self.args.prediction_path, index = None)
+            out.to_csv("./output/predictions_%s"%i, index = None)

@@ -1,0 +1,1 @@
+Namespace(batch_size=32, capsule_dimensions=8, epochs=100, gcn_filters=20, gcn_layers=2, inner_attention_dimension=20, lambd=0.5, learning_rate=0.01, number_of_capsules=8, prediction_path='./output/watts_predictions.csv', test_graph_folder='./input/test/', theta=0.1, train_graph_folder='./input/train/', weight_decay=1e-06)

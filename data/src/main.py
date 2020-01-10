@@ -68,7 +68,7 @@ def parameter_parser():
 
     parser.add_argument("--learning-rate",
                         type = float,
-                        default = 0.02,
+                        default = 0.01,
 	                help = "Learning rate. Default is 0.01.")
 
     parser.add_argument("--lambd",
@@ -90,6 +90,9 @@ def main():
     """
     args = parameter_parser()
     tab_printer(args)
+    config = open('./output/config.txt','w')
+    config.write(str(args))
+    config.close()
     model = CapsGNNTrainer(args)
     model.fit()
     model.score()
