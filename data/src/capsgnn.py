@@ -14,7 +14,7 @@ class CapsGNN(torch.nn.Module):
     An implementation of themodel described in the following paper:
     https://openreview.net/forum?id=Byl8BnRcYm
     """
-    def __init__(self, args, number_of_features, number_of_targets):
+    def __init__(self, args, number_of_features, number_of_targets,active_task=0):
         super(CapsGNN, self).__init__()
         """
         :param args: Arguments object.
@@ -27,6 +27,10 @@ class CapsGNN(torch.nn.Module):
         self.number_of_tasks = 8
         self._setup_layers()
 
+    def set_active_task(self, active_task):
+        self.active_task = active_task
+        return active_task
+    
     def _setup_base_layers(self):
         """
         Creating GCN layers.
@@ -83,8 +87,17 @@ class CapsGNN(torch.nn.Module):
             
             vars(self)["reconstruction_layer_3_%s"%i] = torch.nn.Linear(int((self.number_of_features * 3) / 2), self.number_of_features)
             
+            
+            
 
-
+    
+    def _setup_taskrouting_layers(self):
+        '''
+        Creating task routing layers
+        '''
+        
+        self.taskrouting = TaskRouter(unit_count = self.number_of_features, task_count=self.number_of_tasks, sigma= 0.5, name="TaskRouter")
+        
         
     def _setup_layers(self):
         """
@@ -102,6 +115,8 @@ class CapsGNN(torch.nn.Module):
         self._setup_graph_capsules()
         self._setup_class_capsule()
         self._setup_reconstruction_layers()
+        
+        self._setup_taskrouting_layers(self)
 
     def calculate_reconstruction_loss(self, capsule_input, features,task):
         """
@@ -185,10 +200,9 @@ class CapsGNN(torch.nn.Module):
             
             output = output + (vars()["reconstruction_loss_%s"%i],)
 
-        #reconstruction_loss = reconstruction_loss / self.number_of_tasks
+        #######
         
-        ########
-        #output = output + (reconstruction_loss,)
+        router = self.taskrouting(unit_count = self.number_of_features, task_count=self.number_of_tasks, sigma= 0.5, name="TaskRouter")
         
         
         return output
@@ -331,17 +345,12 @@ class CapsGNNTrainer(object):
                     loss = 0
                     data = self.create_input_data(path,task)
                     batch_output = self.model(data)
-                    
-                    #prediction_0, prediction_1, reconstruction_loss_0, reconstruction_loss_1 = self.model(data)
-                    
+                                        
                     for i in range(task):
                         loss+=margin_loss(batch_output[i],data["target%s"%i],self.args.lambd)
                         loss+=self.args.theta*batch_output[i+task]
                     
-                    '''
-                    loss+= margin_loss(prediction_2,data["target2"],self.args.lambd)+self.args.theta*reconstruction_loss_2
-                    loss+= margin_loss(prediction_3, data["target3"],self.args.lambd)+self.args.theta*reconstruction_loss_3
-                    '''
+       
                     
                     accumulated_losses = accumulated_losses + (loss/task)
                 

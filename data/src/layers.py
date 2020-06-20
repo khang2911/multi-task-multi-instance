@@ -195,7 +195,7 @@ class TaskRouter(nn.Module):
         sigma (int): Ratio for routed units per task.
     """
 
-    def __init__(self, unit_count, task_count, sigma, name="TaskRouter"):
+    def __init__(self, unit_count, task_count, sigma=0.5, name="TaskRouter"):
 
         super(TaskRouter, self).__init__()
 
